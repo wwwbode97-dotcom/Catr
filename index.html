@@ -85,7 +85,7 @@
 
       <button id="btnOpenSettings" type="button" class="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-slate-800/90 border border-slate-600/70 hover:border-slate-400 text-xs font-semibold transition">
         <span class="w-2 h-2 rounded-full bg-emerald-400" id="baudDot"></span>
-        <span id="baudLabel" class="mono text-slate-200">19200 Baud</span>
+        <span id="baudLabel" class="mono text-slate-200">9600 Baud</span>
         <svg class="w-3.5 h-3.5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
@@ -395,8 +395,8 @@
         <div>
           <label for="settingBaudRate" class="block text-slate-300 font-bold mb-1">سرعة نقل البيانات (Baud Rate):</label>
           <select id="settingBaudRate" class="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white font-bold mono">
-            <option value="9600">9600</option>
-            <option value="19200" selected>19200 (المستخدم مع برنامج الكاتر)</option>
+            <option value="9600" selected>9600 (موصى به لكاتر 365)</option>
+            <option value="19200">19200</option>
             <option value="38400">38400</option>
             <option value="57600">57600</option>
             <option value="115200">115200</option>
@@ -444,7 +444,7 @@
         mirror: false,
         jogStepMm: 10,
         penDown: false,
-        baudRate: 19200,
+        baudRate: 9600,
         scaleUnitsPerMm: 40.0, // Standard HPGL: 40 units = 1 mm
         chunkDelayMs: 25,
         polylinesMm: [], // Array of polylines, each is [{x, y}, ...] in mm
@@ -1000,8 +1000,11 @@
       }
 
       async function connectViaUSB() {
-        // 1. Try Web Serial API first (Desktop Chrome / Android supporting serial)
-        if ('serial' in navigator) {
+        // على الموبايل (أندرويد) Web Serial غالباً ما يكتشف شريحة CH340، فنفضل WebUSB أولاً
+        const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || '');
+
+        // 1. على الكمبيوتر: جرب Web Serial أولاً (أسهل وأكثر استقراراً)
+        if (!isMobile && 'serial' in navigator) {
           try {
             const port = await navigator.serial.requestPort();
             await port.open({ baudRate: state.baudRate, dataBits: 8, stopBits: 1, parity: 'none' });
@@ -1012,19 +1015,21 @@
             showToast('تم الاتصال بالكاتر عبر منفذ USB بنجاح', 'USB OTG');
             return;
           } catch (err) {
-            if (err && err.name === 'NotFoundError') {
-              showToast('لم يتم اختيار منفذ USB', 'تنبيه');
-              return;
+            // لو المستخدم ألغى أو مفيش منفذ → نكمل ونحاول WebUSB
+            if (err && (err.name === 'NotFoundError' || err.name === 'AbortError')) {
+              // نكمل للـ WebUSB
+            } else {
+              console.warn('Web Serial error:', err);
             }
           }
         }
 
-        // 2. Fallback to WebUSB API (Standard on Android Chrome with OTG Cable for CH340 / FTDI / CP210x)
+        // 2. WebUSB (الطريقة الأساسية على أندرويد مع كابل OTG لشرائح CH340 / FTDI / CP210x)
         if ('usb' in navigator) {
           try {
             const device = await navigator.usb.requestDevice({
               filters: [
-                { vendorId: 0x1A86 }, // QinHeng CH340 / CH341 (Used in 90% of 365 Cutters)
+                { vendorId: 0x1A86 }, // QinHeng CH340 / CH341 (معظم كاتر 365)
                 { vendorId: 0x0403 }, // FTDI FT232
                 { vendorId: 0x10C4 }, // Silicon Labs CP210x
                 { vendorId: 0x067B }  // Prolific PL2303
@@ -1037,9 +1042,9 @@
             const iface = device.configuration.interfaces[0];
             await device.claimInterface(iface.interfaceNumber);
 
-            // Configure CH340 / FTDI / CP210x Baud Rate (9600 default)
+            // إعداد سرعة النقل + تفعيل RTS/CTS (مهم لكاتر 365)
             if (device.vendorId === 0x1A86) {
-              // CH340 init + baud rate from settings (e.g. 19200) + 8N1 + DTR/RTS asserted
+              // CH340 / CH341
               const ctl = (req, val, idx) => device.controlTransferOut({ requestType: 'vendor', recipient: 'device', request: req, value: val, index: idx });
               await ctl(0xA1, 0, 0);
               let factor, divisor;
@@ -1053,14 +1058,16 @@
               divisor |= 0x0080;
               await ctl(0x9A, 0x1312, (factor & 0xff00) | divisor);
               await ctl(0x9A, 0x0f2c, factor & 0xff);
-              await ctl(0x9A, 0x2518, 0xC3);      // enable RX/TX, 8 data bits, no parity
-              await ctl(0xA4, 0x9F, 0);           // assert DTR + RTS (cutter uses RTS/CTS flow control)
+              await ctl(0x9A, 0x2518, 0xC3);      // 8N1
+              await ctl(0xA4, 0x9F, 0);           // DTR + RTS (Flow control RTS/CTS)
             } else if (device.vendorId === 0x0403) {
-              // FTDI reset & 9600 baud (divisor 0x4138)
+              // FTDI
               await device.controlTransferOut({ requestType: 'vendor', recipient: 'device', request: 0, value: 0, index: 0 });
-              await device.controlTransferOut({ requestType: 'vendor', recipient: 'device', request: 3, value: 0x4138, index: 0 });
+              // Baud rate divisor for common rates (approx for 9600)
+              const ftdiDiv = (Number(state.baudRate) === 19200) ? 0x809C : 0x4138;
+              await device.controlTransferOut({ requestType: 'vendor', recipient: 'device', request: 3, value: ftdiDiv, index: 0 });
             } else if (device.vendorId === 0x10C4) {
-              // CP210x enable UART
+              // CP210x
               await device.controlTransferOut({ requestType: 'vendor', recipient: 'interface', request: 0x00, value: 0x01, index: iface.interfaceNumber });
             }
 
@@ -1074,12 +1081,37 @@
             showToast('تم ربط الكاتر عبر كابل USB OTG بنجاح', 'OTG');
             return;
           } catch (err) {
-            showToast('تأكد من توصيل كابل OTG بالكاتر وتشغيل الباور', 'USB OTG');
+            console.warn('WebUSB error:', err);
+            if (err && err.name === 'NotFoundError') {
+              showToast('لم يظهر الجهاز. اقفل برنامج الترمينال وافصل وأعد توصيل كابل OTG', 'USB OTG');
+            } else if (err && err.name === 'SecurityError') {
+              showToast('المتصفح رفض الوصول. تأكد أنك تستخدم Chrome وHTTPS', 'تنبيه');
+            } else {
+              showToast('تأكد من توصيل كابل OTG وتشغيل الباور، واقفل أي برنامج تيرمينال مفتوح', 'USB OTG');
+            }
             return;
           }
         }
 
-        showToast('متصفحك الحالي لا يدعم WebUSB مباشرة؛ افتح الملف في Chrome على الموبايل', 'تنبيه');
+        // 3. لو الموبايل ومافيش WebUSB، جرب Serial كحل أخير
+        if (isMobile && 'serial' in navigator) {
+          try {
+            const port = await navigator.serial.requestPort();
+            await port.open({ baudRate: state.baudRate, dataBits: 8, stopBits: 1, parity: 'none' });
+            state.serialPort = port;
+            state.connectionType = 'serial';
+            usbBtnText.textContent = 'متصل USB ✓';
+            updateConnectionUI(true, 'متصل بالكاتر عبر USB Serial (' + state.baudRate + ' Baud)');
+            showToast('تم الاتصال بالكاتر عبر منفذ USB بنجاح', 'USB OTG');
+            return;
+          } catch (err) {
+            if (err && err.name === 'NotFoundError') {
+              showToast('لم يتم العثور على أجهزة متوافقة. استخدم Chrome + كابل OTG واقفل الترمينال', 'تنبيه');
+            }
+          }
+        }
+
+        showToast('متصفحك الحالي لا يدعم الاتصال المباشر. افتح الموقع في Chrome على الموبايل', 'تنبيه');
       }
 
       async function connectViaBluetooth() {
