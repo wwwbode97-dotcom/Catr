@@ -381,7 +381,7 @@
 
         <!-- Active Calibration Pill -->
         <div class="flex items-center justify-between px-3 py-2 rounded-xl bg-slate-900/80 border border-slate-700/70 text-[11px]">
-          <span id="activeCalibSummary" class="text-slate-300 mono">معايرة X: 40.0 | Y: 40.0</span>
+          <span id="activeCalibSummary" class="text-slate-300 mono">معايرة X: 39.60 | Y: 39.60</span>
           <button id="btnOpenCalibQuick" type="button" class="text-emerald-400 hover:text-emerald-300 font-bold underline">ضبط المعايرة (100×100)</button>
         </div>
       </section>
@@ -433,17 +433,17 @@
         <div class="p-3 rounded-xl bg-emerald-950/30 border border-emerald-500/35 space-y-2.5">
           <div class="flex items-center justify-between">
             <span class="font-extrabold text-emerald-300">معايرة المقاسات المنفصلة (X / Y)</span>
-            <button id="btnResetScaleXY" type="button" class="text-[11px] text-amber-300 hover:underline font-bold">إعادة 40 / 40</button>
+            <button id="btnResetScaleXY" type="button" class="text-[11px] text-amber-300 hover:underline font-bold">إعادة 39.6 / 39.6</button>
           </div>
 
           <div class="grid grid-cols-2 gap-2.5">
             <div>
               <label for="settingScaleX" class="block text-slate-300 font-bold mb-1">معامل العرض X (نقطة/مم):</label>
-              <input id="settingScaleX" type="number" step="0.05" min="10" max="120" value="40.0" class="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white font-bold mono" style="user-select:text" />
+              <input id="settingScaleX" type="number" step="0.05" min="10" max="120" value="39.6" class="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white font-bold mono" style="user-select:text" />
             </div>
             <div>
               <label for="settingScaleY" class="block text-slate-300 font-bold mb-1">معامل الطول Y (نقطة/مم):</label>
-              <input id="settingScaleY" type="number" step="0.05" min="10" max="120" value="40.0" class="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white font-bold mono" style="user-select:text" />
+              <input id="settingScaleY" type="number" step="0.05" min="10" max="120" value="39.6" class="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white font-bold mono" style="user-select:text" />
             </div>
           </div>
 
@@ -508,9 +508,9 @@
         heightMm: 50,
         copies: 1,
         baudRate: 9600,
-        scaleUnitsPerMm: 40.0,
-        scaleX: 40.0,
-        scaleY: 40.0,
+        scaleUnitsPerMm: 39.6,
+        scaleX: 39.6,
+        scaleY: 39.6,
         invertPlotterY: true,  // Verified exact match on 365 Cutting Plotter
         invertPlotterX: false,
         chunkDelayMs: 25,
@@ -839,10 +839,32 @@
       }
 
       // --- Parse Uploaded SVG or PLT/HPGL Files ---
+      function setRealUploadedDims(wMm, hMm) {
+        if (wMm >= 5 && wMm <= 350 && hMm >= 5 && hMm <= 1000) {
+          state.widthMm = Math.round(wMm * 10) / 10;
+          state.heightMm = Math.round(hMm * 10) / 10;
+          inputWidthMm.value = String(state.widthMm);
+          inputHeightMm.value = String(state.heightMm);
+        }
+      }
+
+      function parseSvgLengthToMm(str) {
+        if (!str) return null;
+        const m = String(str).trim().match(/^([0-9.]+)\s*(mm|cm|in|pt|px)?$/i);
+        if (!m) return null;
+        const val = parseFloat(m[1]);
+        const unit = (m[2] || 'px').toLowerCase();
+        if (unit === 'mm') return val;
+        if (unit === 'cm') return val * 10;
+        if (unit === 'in') return val * 25.4;
+        if (unit === 'pt') return val * 25.4 / 72;
+        return val * 25.4 / 96; // px
+      }
+
       function parsePltTextToPolylines(pltString) {
         const polylines = [];
         let currentPoly = [];
-        const scale = state.scaleX || state.scaleUnitsPerMm || 40.0;
+        const scale = 40.0; // Standard HPGL file unit (40 units = 1 mm)
         const tokens = pltString.replace(/\r|\n/g, '').split(';');
 
         for (let i = 0; i < tokens.length; i++) {
@@ -866,6 +888,16 @@
           }
         }
         if (currentPoly.length > 1) polylines.push(currentPoly);
+
+        // Auto-detect real mm dimensions from PLT geometry
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        polylines.forEach(pl => pl.forEach(p => {
+          if (p.x < minX) minX = p.x; if (p.y < minY) minY = p.y;
+          if (p.x > maxX) maxX = p.x; if (p.y > maxY) maxY = p.y;
+        }));
+        if (isFinite(minX) && maxX > minX && maxY > minY) {
+          setRealUploadedDims(maxX - minX, maxY - minY);
+        }
         return normalizePolylinesToSize(polylines, state.widthMm, state.heightMm);
       }
 
@@ -877,6 +909,21 @@
           showToast('ملف SVG غير صالح', 'خطأ');
           return [];
         }
+
+        // Read real physical dimensions (mm) from SVG width/height & viewBox
+        const attrW = parseSvgLengthToMm(svgEl.getAttribute('width'));
+        const attrH = parseSvgLengthToMm(svgEl.getAttribute('height'));
+        const vbAttr = svgEl.getAttribute('viewBox');
+        let vbW = null, vbH = null;
+        if (vbAttr) {
+          const parts = vbAttr.trim().split(/[\s,]+/).map(Number);
+          if (parts.length === 4 && parts[2] > 0 && parts[3] > 0) {
+            vbW = parts[2]; vbH = parts[3];
+          }
+        }
+        const mmPerUnitX = (attrW && vbW) ? (attrW / vbW) : (25.4 / 96);
+        const mmPerUnitY = (attrH && vbH) ? (attrH / vbH) : (25.4 / 96);
+
         const geomEls = svgEl.querySelectorAll('path, rect, circle, ellipse, polygon, polyline, line');
         const rawPolys = [];
 
@@ -885,20 +932,29 @@
             try {
               const totalLen = el.getTotalLength();
               if (totalLen > 0) {
-                const steps = Math.min(160, Math.max(16, Math.ceil(totalLen / 3)));
+                const steps = Math.min(240, Math.max(24, Math.ceil(totalLen / 1.5)));
                 const pts = [];
                 for (let s = 0; s <= steps; s++) {
                   const pt = el.getPointAtLength((s / steps) * totalLen);
-                  pts.push({ x: pt.x, y: pt.y });
+                  pts.push({ x: pt.x * mmPerUnitX, y: pt.y * mmPerUnitY });
                 }
                 rawPolys.push(pts);
               }
-            } catch (e) {
-              // Ignore unsupported element
-            }
+            } catch (e) {}
           }
         });
         holder.innerHTML = '';
+
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        rawPolys.forEach(pl => pl.forEach(p => {
+          if (p.x < minX) minX = p.x; if (p.y < minY) minY = p.y;
+          if (p.x > maxX) maxX = p.x; if (p.y > maxY) maxY = p.y;
+        }));
+        if (isFinite(minX) && maxX > minX && maxY > minY) {
+          setRealUploadedDims(maxX - minX, maxY - minY);
+        } else if (attrW && attrH) {
+          setRealUploadedDims(attrW, attrH);
+        }
         return normalizePolylinesToSize(rawPolys, state.widthMm, state.heightMm);
       }
 
@@ -927,8 +983,8 @@
 
       // --- Convert Current Polylines to Standard HPGL Code (EXACT v4 Verified Cut Output) ---
       function buildHpglFromState() {
-        const sx = state.scaleX || state.scaleUnitsPerMm || 40.0;
-        const sy = state.scaleY || state.scaleUnitsPerMm || 40.0;
+        const sx = state.scaleX || state.scaleUnitsPerMm || 39.6;
+        const sy = state.scaleY || state.scaleUnitsPerMm || 39.6;
         const wMm = Math.max(5, Number(state.widthMm) || 100);
         const hMm = Math.max(5, Number(state.heightMm) || 50);
         const copies = Math.max(1, Number(state.copies) || 1);
@@ -2078,8 +2134,8 @@
       document.getElementById('btnCutCalib100').addEventListener('click', sendCalibrationSquare100);
 
       document.getElementById('btnResetScaleXY').addEventListener('click', () => {
-        document.getElementById('settingScaleX').value = '40';
-        document.getElementById('settingScaleY').value = '40';
+        document.getElementById('settingScaleX').value = '39.6';
+        document.getElementById('settingScaleY').value = '39.6';
         document.getElementById('calibMeasuredX').value = '';
         document.getElementById('calibMeasuredY').value = '';
       });
@@ -2112,8 +2168,8 @@
 
       document.getElementById('btnSaveSettings').addEventListener('click', () => {
         state.baudRate = Number(document.getElementById('settingBaudRate').value) || 9600;
-        state.scaleX = Number(document.getElementById('settingScaleX').value) || 40.0;
-        state.scaleY = Number(document.getElementById('settingScaleY').value) || 40.0;
+        state.scaleX = Number(document.getElementById('settingScaleX').value) || 39.6;
+        state.scaleY = Number(document.getElementById('settingScaleY').value) || 39.6;
         state.scaleUnitsPerMm = state.scaleX;
         state.chunkDelayMs = Number(document.getElementById('settingChunkDelay').value) || 25;
         state.invertPlotterY = !!document.getElementById('settingInvertY').checked;
